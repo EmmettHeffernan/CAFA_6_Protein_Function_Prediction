@@ -18,17 +18,18 @@ def prepare_seq(seq):
     formatted_seq = f"[CLS] {spaced_seq} [SEP]"
     return formatted_seq
 
-def get_protbert_embeddings(sequences, model, tokenizer, device):
-    ids = tokenizer(sequences, add_special_tokens=False, padding=True, truncation=True, max_length=1024, return_tensors='pt').to(device)
+def get_protbert_embeddings(sequences, model, tokenizer, device, batch_size=8):
+    all_embeddings = []
+    for i in range(0, len(sequences), batch_size):
+        batch = sequences[i:i+batch_size]
+        ids = tokenizer(batch, add_special_tokens=False, padding=True, truncation=True,
+                        max_length=1024, return_tensors='pt').to(device)
+        with torch.no_grad():
+            output = model(**ids)
+        embeddings = output.last_hidden_state[:, 0, :]  # CLS token
+        all_embeddings.append(embeddings.cpu().numpy())
+    return np.vstack(all_embeddings)
 
-    with torch.no_grad():
-        output = model(**ids)
-
-    embeddings = output.last_hidden_state
-
-    protein_embeddings = embeddings[:, 0, :]
-
-    return protein_embeddings.cpu().numpy()
 
 def fasta_parse(fasta_file):
     records = []
@@ -83,8 +84,9 @@ protein_terms = protein_terms[protein_terms['filtered_terms'].map(len) > 0]
 
 # --- 2d: Create the MultiLabelBinarizer (MLiB) and the binary matrix ---
 # The MLiB maps each GO term string to a column index
-mlb = MultiLabelBinarizer(classes=selected_terms)
+mlb = MultiLabelBinarizer()
 y_labels = mlb.fit_transform(protein_terms['filtered_terms'])
+selected_terms = mlb.classes_
 
 print(f"Shape of Y labels matrix: {y_labels.shape}")
 
@@ -110,6 +112,9 @@ seq_df_aligned = seq_df[seq_df['ID'].isin(y_protein_ids)].copy()
 seq_df_aligned['ID'] = pd.Categorical(seq_df_aligned['ID'], categories=y_protein_ids, ordered=True)
 seq_df_aligned = seq_df_aligned.sort_values('ID').reset_index(drop=True)
 
+# Double-check alignment
+assert all(seq_df_aligned['ID'].tolist() == y_protein_ids), "Sequence alignment mismatch!"
+
 # Re-run embedding generation *only* on the aligned sequences if necessary,
 # or ensure the original protein_features array matches this order exactly.
 # The simplest approach is to use the aligned sequence list:
@@ -121,6 +126,14 @@ X_features = get_protbert_embeddings(aligned_sequences, model, tokenizer, device
 
 print(f"Shape of X features: {X_features.shape}")
 print(f"Shape of Y labels: {y_labels.shape}")
+
+# --- Step 4: PCA Dimensionality Reduction (Optional but Recommended) ---
+from sklearn.decomposition import PCA
+
+print("Running PCA to reduce embedding dimensionality...")
+pca = PCA(n_components=128)
+X_features_pca = pca.fit_transform(X_features)
+print(f"Reduced feature shape: {X_features_pca.shape}")
 
 # Split data (using the aligned X and Y)
 X_train, X_test, y_train, y_test = train_test_split(X_features, y_labels, test_size=0.2, random_state=42)
@@ -151,3 +164,9 @@ print("\nStarting ensemble training...")
 # Train the model
 stacked_ensemble.fit(X_train, y_train)
 print("Training complete.")
+
+from sklearn.metrics import f1_score
+
+y_pred = stacked_ensemble.predict(X_test)
+print("Micro-F1:", f1_score(y_test, y_pred, average='micro'))
+print("Macro-F1:", f1_score(y_test, y_pred, average='macro'))
