@@ -56,6 +56,8 @@ print(taxonomy_df)
 print(terms_df)
 print(f"Number of terms: {len(go_basic.terms())}")
 
+seq_df['ID'] = seq_df['ID'].str.split('|').str[1].fillna(seq_df['ID'])
+
 # Testing Sets
 superset_taxon_df = pd.read_csv('cafa-6-protein-function-prediction copy/Test/testsuperset-taxon-list.tsv', sep='\t')
 
@@ -72,7 +74,7 @@ selected_terms = term_counts.head(top_n).index.tolist()
 
 # --- 2b: Group terms by protein accession ---
 # Consolidate all terms for each protein ID into a single list
-protein_terms = terms_df.groupby('Protein Accession')['term'].apply(list).reset_index()
+protein_terms = terms_df.groupby('EntryID')['term'].apply(list).reset_index()
 
 # --- 2c: Filter the terms list to only include our selected terms ---
 protein_terms['filtered_terms'] = protein_terms['term'].apply(
@@ -104,7 +106,7 @@ protein_features = get_protbert_embeddings(sequences, model, tokenizer, device)
 print(f"Shape of features: {protein_features.shape}")
 
 # The protein IDs corresponding to the Y matrix
-y_protein_ids = protein_terms['Protein Accession'].tolist()
+y_protein_ids = protein_terms['EntryID'].tolist()
 
 # Ensure seq_df is aligned and filtered to match the proteins we have labels for
 seq_df_aligned = seq_df[seq_df['ID'].isin(y_protein_ids)].copy()
@@ -135,8 +137,8 @@ pca = PCA(n_components=128)
 X_features_pca = pca.fit_transform(X_features)
 print(f"Reduced feature shape: {X_features_pca.shape}")
 
-# Split data (using the aligned X and Y)
-X_train, X_test, y_train, y_test = train_test_split(X_features, y_labels, test_size=0.2, random_state=42)
+# Split data (using the reduced X and Y)
+X_train, X_test, y_train, y_test = train_test_split(X_features_pca, y_labels, test_size=0.2, random_state=42)
 
 # Define Base Learners (e.g., Random Forest/Bagging, XGBoost/Boosting)
 rf = RandomForestClassifier(n_estimators=50, random_state=42, n_jobs=-1)
